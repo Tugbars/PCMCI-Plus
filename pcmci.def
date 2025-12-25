@@ -54,3 +54,13 @@ EXPORTS
     pcmci_kdtree_free
     pcmci_digamma
     pcmci_normalize_data
+
+    ; GPDC (Gaussian Process Distance Correlation)
+    pcmci_gpdc_default_config
+    pcmci_gpdc_test
+    pcmci_gpdc_value
+    pcmci_dcor
+    pcmci_dcov
+    pcmci_dvar
+    pcmci_dcor_test
+    pcmci_gp_residuals
