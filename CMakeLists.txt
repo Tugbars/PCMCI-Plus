@@ -177,6 +177,7 @@ set(PCMCI_SOURCES
     src/mci.c
     src/significance.c
     src/pcmci.c
+    src/cmi.c
 )
 
 # Helper function to apply BLAS flags and definitions
@@ -224,6 +225,10 @@ target_link_libraries(pcmci_static PUBLIC
     ${BLAS_LIBRARIES}
     OpenMP::OpenMP_C
 )
+# On Windows, define PCMCI_EXPORTS to avoid dllimport issues
+if(WIN32)
+    target_compile_definitions(pcmci_static PUBLIC PCMCI_EXPORTS)
+endif()
 if(NOT WIN32)
     target_link_libraries(pcmci_static PUBLIC m)
     target_compile_definitions(pcmci_static PRIVATE _GNU_SOURCE)
@@ -257,6 +262,15 @@ else()
     target_link_libraries(pcmci_benchmark PRIVATE pcmci)
 endif()
 apply_blas_flags(pcmci_benchmark)
+
+# CMI example
+add_executable(pcmci_cmi_test examples/example_cmi.c)
+if(WIN32)
+    target_link_libraries(pcmci_cmi_test PRIVATE pcmci_static)
+else()
+    target_link_libraries(pcmci_cmi_test PRIVATE pcmci)
+endif()
+apply_blas_flags(pcmci_cmi_test)
 
 # Install targets
 install(TARGETS pcmci pcmci_static
