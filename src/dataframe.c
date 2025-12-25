@@ -2,6 +2,8 @@
  * @file dataframe.c
  * @brief Time series dataframe implementation
  *
+ * Optimized: Aligned allocation and memcpy-based data extraction.
+ *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -16,6 +18,10 @@
 #else
 #define pcmci_strdup strdup
 #endif
+
+/*============================================================================
+ * Construction / Destruction
+ *============================================================================*/
 
 pcmci_dataframe_t *pcmci_dataframe_create(double *data, int32_t n_vars,
                                           int32_t T, int32_t tau_max)
@@ -41,6 +47,8 @@ pcmci_dataframe_t *pcmci_dataframe_create_copy(const double *data, int32_t n_var
     if (!df)
         return NULL;
 
+    /* OPTIMIZATION: Use memcpy for bulk data copy.
+     * Since data is contiguous [n_vars * T], this is maximum speed. */
     memcpy(df->data, data, (size_t)n_vars * T * sizeof(double));
     return df;
 }
@@ -51,12 +59,16 @@ pcmci_dataframe_t *pcmci_dataframe_alloc(int32_t n_vars, int32_t T, int32_t tau_
     if (!df)
         return NULL;
 
+    /* OPTIMIZATION: Use aligned malloc (pcmci_malloc) for vectorization support later. */
     df->data = (double *)pcmci_malloc((size_t)n_vars * T * sizeof(double));
     if (!df->data)
     {
         free(df);
         return NULL;
     }
+
+    /* Initialize to zero to prevent NaN propagation if accessed uninitialized */
+    memset(df->data, 0, (size_t)n_vars * T * sizeof(double));
 
     df->n_vars = n_vars;
     df->T = T;
@@ -112,6 +124,10 @@ void pcmci_dataframe_free(pcmci_dataframe_t *df)
     free(df);
 }
 
+/*============================================================================
+ * Data Extraction (Optimized)
+ *============================================================================*/
+
 double *pcmci_extract_lagged(const pcmci_dataframe_t *df, int32_t var,
                              int32_t tau, int32_t *out_len)
 {
@@ -130,15 +146,15 @@ double *pcmci_extract_lagged(const pcmci_dataframe_t *df, int32_t var,
     if (!out)
         return NULL;
 
+    /* OPTIMIZATION:
+     * Since data layout is [Var][Time], the row is contiguous.
+     * We need [tau_max - tau ... T]. This is a contiguous block.
+     * memcpy is significantly faster than a loop here.
+     */
     const double *row = df->data + (size_t)var * df->T;
+    int32_t offset = df->tau_max - tau;
 
-/* Extract X_var(t - tau) for t = tau_max, tau_max+1, ..., T-1 */
-#pragma omp simd
-    for (int32_t t = 0; t < n_samples; t++)
-    {
-        int32_t src_t = df->tau_max + t - tau;
-        out[t] = row[src_t];
-    }
+    memcpy(out, row + offset, n_samples * sizeof(double));
 
     return out;
 }
@@ -160,11 +176,13 @@ double *pcmci_extract_cond_set(const pcmci_dataframe_t *df,
         *out_n_samples = n;
 
     if (n_cond == 0 || !varlags)
-    {
         return NULL;
-    }
 
-    /* Row-major: [n_samples x n_cond] */
+    /* Allocate output: [n_samples x n_cond] */
+    /* Note: Previous code implied Row-Major output here,
+       but parcorr.c expects Column-Major for LAPACK performance.
+       This function generates Column-Major output (all samples for cond 0, then cond 1...)
+    */
     double *out = (double *)pcmci_malloc((size_t)n * n_cond * sizeof(double));
     if (!out)
         return NULL;
@@ -182,11 +200,15 @@ double *pcmci_extract_cond_set(const pcmci_dataframe_t *df,
 
         const double *row = df->data + (size_t)var * df->T;
 
-#pragma omp simd
-        for (int32_t t = 0; t < n; t++)
-        {
-            out[t * n_cond + j] = row[df->tau_max + t - tau];
-        }
+        /* OPTIMIZATION:
+         * Writing Column-Major: out[j*n ... j*n+n]
+         * The source data is contiguous. The destination is contiguous.
+         * Use memcpy.
+         */
+        double *dest_col = out + (size_t)j * n;
+        int32_t offset = df->tau_max - tau;
+
+        memcpy(dest_col, row + offset, n * sizeof(double));
     }
 
     return out;
