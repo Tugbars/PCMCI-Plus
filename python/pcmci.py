@@ -349,14 +349,450 @@ def version() -> str:
     """Get PCMCI+ library version."""
     return _bind.version()
 
+
+# =============================================================================
+# CMI (Conditional Mutual Information) API
+# =============================================================================
+
+@dataclass
+class CMIResult:
+    """Result of CMI test."""
+    cmi: float          # CMI value in nats
+    pvalue: float       # P-value from permutation test
+    k: int              # Number of neighbors used
+    n_perm: int         # Number of permutations
+    
+    @property
+    def significant(self) -> bool:
+        return self.pvalue < 0.05
+    
+    def __repr__(self):
+        return f"CMIResult(cmi={self.cmi:.4f}, pvalue={self.pvalue:.4f}, k={self.k})"
+
+
+def cmi_test(
+    X: np.ndarray,
+    Y: np.ndarray,
+    Z: Optional[np.ndarray] = None,
+    k: int = 5,
+    n_perm: int = 100,
+    seed: int = 0
+) -> CMIResult:
+    """
+    Test conditional independence using Conditional Mutual Information.
+    
+    CMI uses the KSG k-nearest neighbor estimator to detect both linear
+    and nonlinear dependencies. CMI(X;Y|Z) = 0 iff X ⊥ Y | Z.
+    
+    Parameters
+    ----------
+    X : np.ndarray
+        First variable, shape (n,)
+    Y : np.ndarray
+        Second variable, shape (n,)
+    Z : np.ndarray, optional
+        Conditioning variables, shape (n,) or (n, dim_z)
+    k : int
+        Number of nearest neighbors (default: 5)
+    n_perm : int
+        Number of permutations for p-value (default: 100)
+    seed : int
+        Random seed (0 = time-based)
+    
+    Returns
+    -------
+    CMIResult
+        Contains cmi value and p-value
+    
+    Example
+    -------
+    >>> X = np.random.randn(1000)
+    >>> Y = X**2 + 0.1 * np.random.randn(1000)  # Nonlinear relationship
+    >>> result = cmi_test(X, Y)
+    >>> print(result)  # High CMI, low p-value (parcorr would miss this!)
+    """
+    X = np.ascontiguousarray(X.flatten(), dtype=np.float64)
+    Y = np.ascontiguousarray(Y.flatten(), dtype=np.float64)
+    n = len(X)
+    
+    if len(Y) != n:
+        raise ValueError(f"X and Y must have same length, got {n} and {len(Y)}")
+    
+    # Handle conditioning set
+    if Z is None:
+        Z_ptr = None
+        dim_z = 0
+    else:
+        Z = np.ascontiguousarray(Z, dtype=np.float64)
+        if Z.ndim == 1:
+            Z = Z.reshape(-1, 1)
+        if Z.shape[0] != n:
+            raise ValueError(f"Z must have same length as X, got {Z.shape[0]} and {n}")
+        dim_z = Z.shape[1]
+        # Convert to column-major for C
+        Z = np.asfortranarray(Z)
+        Z_ptr = Z.ctypes.data_as(POINTER(c_double))
+    
+    # Create config
+    config = _bind._lib.pcmci_cmi_default_config()
+    config.k = k
+    config.n_perm = n_perm
+    config.seed = seed
+    
+    # Run test
+    result = _bind._lib.pcmci_cmi_test(
+        X.ctypes.data_as(POINTER(c_double)),
+        Y.ctypes.data_as(POINTER(c_double)),
+        Z_ptr,
+        n, dim_z,
+        byref(config)
+    )
+    
+    return CMIResult(
+        cmi=result.cmi,
+        pvalue=result.pvalue,
+        k=result.k,
+        n_perm=result.n_perm
+    )
+
+
+def mi(X: np.ndarray, Y: np.ndarray, k: int = 5) -> float:
+    """
+    Compute mutual information MI(X; Y) using KSG estimator.
+    
+    Fast computation without permutation test.
+    
+    Parameters
+    ----------
+    X, Y : np.ndarray
+        Variables of shape (n,)
+    k : int
+        Number of nearest neighbors
+    
+    Returns
+    -------
+    float
+        Mutual information in nats
+    """
+    X = np.ascontiguousarray(X.flatten(), dtype=np.float64)
+    Y = np.ascontiguousarray(Y.flatten(), dtype=np.float64)
+    n = len(X)
+    
+    return _bind._lib.pcmci_mi_value(
+        X.ctypes.data_as(POINTER(c_double)),
+        Y.ctypes.data_as(POINTER(c_double)),
+        n, k
+    )
+
+
+def cmi(
+    X: np.ndarray,
+    Y: np.ndarray,
+    Z: Optional[np.ndarray] = None,
+    k: int = 5
+) -> float:
+    """
+    Compute conditional mutual information CMI(X; Y | Z).
+    
+    Fast computation without permutation test.
+    
+    Parameters
+    ----------
+    X, Y : np.ndarray
+        Variables of shape (n,)
+    Z : np.ndarray, optional
+        Conditioning variables, shape (n,) or (n, dim_z)
+    k : int
+        Number of nearest neighbors
+    
+    Returns
+    -------
+    float
+        CMI in nats (0 = independent)
+    """
+    X = np.ascontiguousarray(X.flatten(), dtype=np.float64)
+    Y = np.ascontiguousarray(Y.flatten(), dtype=np.float64)
+    n = len(X)
+    
+    if Z is None:
+        return mi(X, Y, k)
+    
+    Z = np.ascontiguousarray(Z, dtype=np.float64)
+    if Z.ndim == 1:
+        Z = Z.reshape(-1, 1)
+    dim_z = Z.shape[1]
+    Z = np.asfortranarray(Z)
+    
+    return _bind._lib.pcmci_cmi_value(
+        X.ctypes.data_as(POINTER(c_double)),
+        Y.ctypes.data_as(POINTER(c_double)),
+        Z.ctypes.data_as(POINTER(c_double)),
+        n, dim_z, k
+    )
+
+
+# =============================================================================
+# GPDC (Gaussian Process Distance Correlation) API
+# =============================================================================
+
+@dataclass
+class GPDCResult:
+    """Result of GPDC test."""
+    dcor: float         # Distance correlation [0, 1]
+    pvalue: float       # P-value from permutation test
+    n_perm: int         # Number of permutations
+    
+    @property
+    def significant(self) -> bool:
+        return self.pvalue < 0.05
+    
+    def __repr__(self):
+        return f"GPDCResult(dcor={self.dcor:.4f}, pvalue={self.pvalue:.4f})"
+
+
+def gpdc_test(
+    X: np.ndarray,
+    Y: np.ndarray,
+    Z: Optional[np.ndarray] = None,
+    n_perm: int = 100,
+    gp_lengthscale: float = 0.0,
+    gp_variance: float = 0.0,
+    gp_noise: float = 0.1,
+    seed: int = 0
+) -> GPDCResult:
+    """
+    Test conditional independence using GPDC (GP Distance Correlation).
+    
+    GPDC combines Gaussian Process regression (to remove confounding from Z)
+    with distance correlation (to detect any dependence, including nonlinear).
+    
+    For X ⊥ Y | Z:
+    1. Fit GP: X ~ Z, get residuals ε_X
+    2. Fit GP: Y ~ Z, get residuals ε_Y
+    3. Compute dCor(ε_X, ε_Y)
+    
+    Parameters
+    ----------
+    X : np.ndarray
+        First variable, shape (n,)
+    Y : np.ndarray
+        Second variable, shape (n,)
+    Z : np.ndarray, optional
+        Conditioning variables, shape (n,) or (n, dim_z)
+    n_perm : int
+        Number of permutations for p-value
+    gp_lengthscale : float
+        GP RBF kernel lengthscale (0 = auto via median heuristic)
+    gp_variance : float
+        GP signal variance (0 = auto from data)
+    gp_noise : float
+        GP noise variance (default: 0.1)
+    seed : int
+        Random seed
+    
+    Returns
+    -------
+    GPDCResult
+        Contains distance correlation and p-value
+    
+    Notes
+    -----
+    GPDC is more computationally expensive than CMI due to GP regression O(n³),
+    but can handle nonlinear confounding better.
+    
+    Example
+    -------
+    >>> Z = np.random.randn(500)
+    >>> X = np.cos(Z) + 0.1 * np.random.randn(500)
+    >>> Y = np.sin(Z) + 0.1 * np.random.randn(500)
+    >>> # X and Y appear correlated but are independent given Z
+    >>> result = gpdc_test(X, Y, Z)
+    >>> print(result)  # Low dcor, high p-value (correctly identifies X ⊥ Y | Z)
+    """
+    X = np.ascontiguousarray(X.flatten(), dtype=np.float64)
+    Y = np.ascontiguousarray(Y.flatten(), dtype=np.float64)
+    n = len(X)
+    
+    if len(Y) != n:
+        raise ValueError(f"X and Y must have same length")
+    
+    if Z is None:
+        Z_ptr = None
+        dim_z = 0
+    else:
+        Z = np.ascontiguousarray(Z, dtype=np.float64)
+        if Z.ndim == 1:
+            Z = Z.reshape(-1, 1)
+        if Z.shape[0] != n:
+            raise ValueError(f"Z must have same length as X")
+        dim_z = Z.shape[1]
+        Z = np.asfortranarray(Z)
+        Z_ptr = Z.ctypes.data_as(POINTER(c_double))
+    
+    config = _bind._lib.pcmci_gpdc_default_config()
+    config.n_perm = n_perm
+    config.gp_lengthscale = gp_lengthscale
+    config.gp_variance = gp_variance
+    config.gp_noise = gp_noise
+    config.seed = seed
+    
+    result = _bind._lib.pcmci_gpdc_test(
+        X.ctypes.data_as(POINTER(c_double)),
+        Y.ctypes.data_as(POINTER(c_double)),
+        Z_ptr,
+        n, dim_z,
+        byref(config)
+    )
+    
+    return GPDCResult(
+        dcor=result.dcor,
+        pvalue=result.pvalue,
+        n_perm=result.n_perm
+    )
+
+
+def dcor(X: np.ndarray, Y: np.ndarray) -> float:
+    """
+    Compute distance correlation between X and Y.
+    
+    Distance correlation is 0 iff X and Y are independent.
+    Unlike Pearson/Spearman, it detects nonlinear dependencies.
+    
+    Parameters
+    ----------
+    X, Y : np.ndarray
+        Variables of shape (n,)
+    
+    Returns
+    -------
+    float
+        Distance correlation in [0, 1]
+    
+    Example
+    -------
+    >>> X = np.random.randn(1000)
+    >>> Y = X**2  # Nonlinear, zero Pearson correlation
+    >>> print(f"Pearson: {np.corrcoef(X, Y)[0,1]:.3f}")  # ~0
+    >>> print(f"dCor: {dcor(X, Y):.3f}")  # >0, detects dependency!
+    """
+    X = np.ascontiguousarray(X.flatten(), dtype=np.float64)
+    Y = np.ascontiguousarray(Y.flatten(), dtype=np.float64)
+    n = len(X)
+    
+    return _bind._lib.pcmci_dcor(
+        X.ctypes.data_as(POINTER(c_double)),
+        Y.ctypes.data_as(POINTER(c_double)),
+        n
+    )
+
+
+def dcor_test(
+    X: np.ndarray,
+    Y: np.ndarray,
+    n_perm: int = 100,
+    seed: int = 0
+) -> GPDCResult:
+    """
+    Test independence using distance correlation with permutation test.
+    
+    Parameters
+    ----------
+    X, Y : np.ndarray
+        Variables of shape (n,)
+    n_perm : int
+        Number of permutations
+    seed : int
+        Random seed
+    
+    Returns
+    -------
+    GPDCResult
+        Contains dcor and p-value
+    """
+    X = np.ascontiguousarray(X.flatten(), dtype=np.float64)
+    Y = np.ascontiguousarray(Y.flatten(), dtype=np.float64)
+    n = len(X)
+    
+    result = _bind._lib.pcmci_dcor_test(
+        X.ctypes.data_as(POINTER(c_double)),
+        Y.ctypes.data_as(POINTER(c_double)),
+        n, n_perm, seed
+    )
+    
+    return GPDCResult(
+        dcor=result.dcor,
+        pvalue=result.pvalue,
+        n_perm=result.n_perm
+    )
+
+
+def parcorr_test(
+    X: np.ndarray,
+    Y: np.ndarray,
+    Z: Optional[np.ndarray] = None
+) -> Tuple[float, float]:
+    """
+    Test conditional independence using partial correlation.
+    
+    Fast linear test. For nonlinear dependencies, use cmi_test or gpdc_test.
+    
+    Parameters
+    ----------
+    X, Y : np.ndarray
+        Variables of shape (n,)
+    Z : np.ndarray, optional
+        Conditioning variables, shape (n,) or (n, dim_z)
+    
+    Returns
+    -------
+    tuple
+        (partial_correlation, p_value)
+    """
+    X = np.ascontiguousarray(X.flatten(), dtype=np.float64)
+    Y = np.ascontiguousarray(Y.flatten(), dtype=np.float64)
+    n = len(X)
+    
+    if Z is None:
+        Z_ptr = None
+        dim_z = 0
+    else:
+        Z = np.ascontiguousarray(Z, dtype=np.float64)
+        if Z.ndim == 1:
+            Z = Z.reshape(-1, 1)
+        dim_z = Z.shape[1]
+        Z = np.asfortranarray(Z)
+        Z_ptr = Z.ctypes.data_as(POINTER(c_double))
+    
+    result = _bind._lib.pcmci_parcorr_test(
+        X.ctypes.data_as(POINTER(c_double)),
+        Y.ctypes.data_as(POINTER(c_double)),
+        Z_ptr,
+        n, dim_z
+    )
+    
+    return result.val, result.pvalue
+
 # =============================================================================
 # Export
 # =============================================================================
 
 __all__ = [
+    # Main class
     'PCMCI',
     'PCMCIResult', 
     'Link',
     'run_pcmci',
     'version',
+    # CMI
+    'CMIResult',
+    'cmi_test',
+    'cmi',
+    'mi',
+    # GPDC
+    'GPDCResult',
+    'gpdc_test',
+    'dcor',
+    'dcor_test',
+    # Partial correlation
+    'parcorr_test',
 ]

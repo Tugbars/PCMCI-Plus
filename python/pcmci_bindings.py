@@ -293,6 +293,113 @@ _lib.pcmci_parcorr_test.argtypes = [
 _lib.pcmci_parcorr_test.restype = CIResult
 
 # =============================================================================
+# CMI (Conditional Mutual Information) Structures and Functions
+# =============================================================================
+
+class CMIConfig(Structure):
+    """CMI test configuration."""
+    _fields_ = [
+        ("k", c_int32),              # Number of nearest neighbors (default: 5)
+        ("n_perm", c_int32),         # Number of permutations for p-value
+        ("n_threads", c_int32),      # Number of threads (0 = auto)
+        ("use_chebyshev", c_bool),   # Use Chebyshev distance
+        ("seed", c_int32),           # Random seed
+    ]
+
+class CMIResult(Structure):
+    """CMI test result."""
+    _fields_ = [
+        ("cmi", c_double),           # CMI value (in nats)
+        ("pvalue", c_double),        # P-value from permutation test
+        ("stat", c_double),          # Same as cmi
+        ("k", c_int32),              # k used
+        ("n_perm", c_int32),         # permutations used
+    ]
+
+# CMI functions
+_lib.pcmci_cmi_default_config.argtypes = []
+_lib.pcmci_cmi_default_config.restype = CMIConfig
+
+_lib.pcmci_cmi_test.argtypes = [
+    POINTER(c_double), POINTER(c_double), POINTER(c_double),
+    c_int32, c_int32, POINTER(CMIConfig)
+]
+_lib.pcmci_cmi_test.restype = CMIResult
+
+_lib.pcmci_cmi_value.argtypes = [
+    POINTER(c_double), POINTER(c_double), POINTER(c_double),
+    c_int32, c_int32, c_int32
+]
+_lib.pcmci_cmi_value.restype = c_double
+
+_lib.pcmci_mi_value.argtypes = [
+    POINTER(c_double), POINTER(c_double), c_int32, c_int32
+]
+_lib.pcmci_mi_value.restype = c_double
+
+_lib.pcmci_digamma.argtypes = [c_double]
+_lib.pcmci_digamma.restype = c_double
+
+# =============================================================================
+# GPDC (Gaussian Process Distance Correlation) Structures and Functions
+# =============================================================================
+
+class GPDCConfig(Structure):
+    """GPDC test configuration."""
+    _fields_ = [
+        ("n_perm", c_int32),          # Number of permutations for p-value
+        ("gp_lengthscale", c_double), # GP RBF kernel lengthscale (0 = auto)
+        ("gp_variance", c_double),    # GP signal variance (0 = auto)
+        ("gp_noise", c_double),       # GP noise variance
+        ("seed", c_int32),            # Random seed
+    ]
+
+class GPDCResult(Structure):
+    """GPDC test result."""
+    _fields_ = [
+        ("dcor", c_double),           # Distance correlation [0, 1]
+        ("dcov", c_double),           # Distance covariance
+        ("pvalue", c_double),         # P-value from permutation test
+        ("n_perm", c_int32),          # permutations used
+    ]
+
+# GPDC functions
+_lib.pcmci_gpdc_default_config.argtypes = []
+_lib.pcmci_gpdc_default_config.restype = GPDCConfig
+
+_lib.pcmci_gpdc_test.argtypes = [
+    POINTER(c_double), POINTER(c_double), POINTER(c_double),
+    c_int32, c_int32, POINTER(GPDCConfig)
+]
+_lib.pcmci_gpdc_test.restype = GPDCResult
+
+_lib.pcmci_gpdc_value.argtypes = [
+    POINTER(c_double), POINTER(c_double), POINTER(c_double),
+    c_int32, c_int32, POINTER(GPDCConfig)
+]
+_lib.pcmci_gpdc_value.restype = c_double
+
+_lib.pcmci_dcor.argtypes = [POINTER(c_double), POINTER(c_double), c_int32]
+_lib.pcmci_dcor.restype = c_double
+
+_lib.pcmci_dcov.argtypes = [POINTER(c_double), POINTER(c_double), c_int32]
+_lib.pcmci_dcov.restype = c_double
+
+_lib.pcmci_dvar.argtypes = [POINTER(c_double), c_int32]
+_lib.pcmci_dvar.restype = c_double
+
+_lib.pcmci_dcor_test.argtypes = [
+    POINTER(c_double), POINTER(c_double), c_int32, c_int32, c_int32
+]
+_lib.pcmci_dcor_test.restype = GPDCResult
+
+_lib.pcmci_gp_residuals.argtypes = [
+    POINTER(c_double), POINTER(c_double), c_int32, c_int32,
+    c_double, c_double, c_double, POINTER(c_double)
+]
+_lib.pcmci_gp_residuals.restype = c_int32
+
+# =============================================================================
 # Helper Functions
 # =============================================================================
 
@@ -311,5 +418,6 @@ def version() -> str:
 __all__ = [
     '_lib',
     'VarLag', 'CIResult', 'Sepset', 'Graph', 'DataFrame', 'Config', 'Result',
+    'CMIConfig', 'CMIResult', 'GPDCConfig', 'GPDCResult',
     'graph_idx', 'version',
 ]
