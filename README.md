@@ -5,6 +5,7 @@ A fast C implementation of the PCMCI+ algorithm for causal discovery in multivar
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 ## Overview
+<img width="1389" height="590" alt="output" src="https://github.com/user-attachments/assets/95001c36-9a34-4bc4-9726-7e87ad2f1cd1" />
 
 PCMCI+ (Runge, 2020) is a state-of-the-art algorithm for discovering causal relationships in time series data. It combines:
 
