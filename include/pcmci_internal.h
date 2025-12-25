@@ -247,14 +247,19 @@ extern "C"
      */
     typedef struct pcmci_workspace
     {
-        double *X_buf;        /* Source variable [n_samples] */
-        double *Y_buf;        /* Target variable [n_samples] */
-        double *Z_buf;        /* Conditioning set [n_samples × max_cond], col-major */
-        double *resid_X;      /* Residualized X [n_samples] */
-        double *resid_Y;      /* Residualized Y [n_samples] */
-        double *Z_work;       /* Copy of Z for LAPACK (dgels destroys) */
-        double *X_work;       /* Copy of X for LAPACK */
-        double *lapack_work;  /* dgels workspace */
+        double *X_buf;       /* Source variable [n_samples] */
+        double *Y_buf;       /* Target variable [n_samples] */
+        double *Z_buf;       /* Conditioning set [n_samples × max_cond], col-major */
+        double *resid_X;     /* Residualized X [n_samples] */
+        double *resid_Y;     /* Residualized Y [n_samples] */
+        double *Z_work;      /* Copy of Z for LAPACK (dgels destroys) */
+        double *X_work;      /* Copy of X for LAPACK */
+        double *lapack_work; /* dgels workspace */
+
+        /* Cholesky fast-path buffers */
+        double *Gram; /* Z'Z Gram matrix [max_cond × max_cond] */
+        double *Beta; /* Regression coefficients [max_cond] */
+
         int32_t lapack_lwork; /* Workspace size */
         int32_t n_samples;    /* T - tau_max */
         int32_t max_cond;     /* Max conditioning set size */

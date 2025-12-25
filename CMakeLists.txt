@@ -179,13 +179,16 @@ set(PCMCI_SOURCES
     src/pcmci.c
 )
 
-# Helper function to apply BLAS flags
+# Helper function to apply BLAS flags and definitions
 function(apply_blas_flags target)
     if(BLAS_COMPILE_FLAGS)
         target_compile_options(${target} PRIVATE ${BLAS_COMPILE_FLAGS})
     endif()
     if(BLAS_LINK_FLAGS)
         target_link_options(${target} PRIVATE ${BLAS_LINK_FLAGS})
+    endif()
+    if(USE_MKL)
+        target_compile_definitions(${target} PRIVATE PCMCI_USE_MKL)
     endif()
 endfunction()
 
@@ -204,9 +207,6 @@ if(NOT WIN32)
     target_compile_definitions(pcmci PRIVATE _GNU_SOURCE)
 endif()
 apply_blas_flags(pcmci)
-if(USE_MKL)
-    target_compile_definitions(pcmci PRIVATE PCMCI_USE_MKL)
-endif()
 
 # Create static library
 add_library(pcmci_static STATIC ${PCMCI_SOURCES})
@@ -223,9 +223,6 @@ if(NOT WIN32)
     target_compile_definitions(pcmci_static PRIVATE _GNU_SOURCE)
 endif()
 apply_blas_flags(pcmci_static)
-if(USE_MKL)
-    target_compile_definitions(pcmci_static PRIVATE PCMCI_USE_MKL)
-endif()
 
 # Example executable
 add_executable(pcmci_example examples/example_basic.c)
@@ -245,6 +242,15 @@ else()
     target_link_libraries(pcmci_synthetic PRIVATE pcmci)
 endif()
 apply_blas_flags(pcmci_synthetic)
+
+# Latency benchmark
+add_executable(pcmci_benchmark examples/benchmark_latency.c)
+if(WIN32)
+    target_link_libraries(pcmci_benchmark PRIVATE pcmci_static)
+else()
+    target_link_libraries(pcmci_benchmark PRIVATE pcmci)
+endif()
+apply_blas_flags(pcmci_benchmark)
 
 # Install targets
 install(TARGETS pcmci pcmci_static

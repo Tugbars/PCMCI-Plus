@@ -270,7 +270,7 @@ static bool comb_next(int32_t *indices, int32_t n, int32_t k)
 }
 
 /*============================================================================
- * Skeleton Discovery (PC-Stable) - Zero allocations in hot path
+ * Skeleton Discovery (PC-Stable) - Lock-free with thread-local storage
  *============================================================================*/
 
 typedef struct
@@ -280,6 +280,39 @@ typedef struct
     int32_t sep_vars[32];
     int32_t sep_taus[32];
 } removal_t;
+
+/* Thread-local removal buffer */
+typedef struct
+{
+    removal_t *removals;
+    int32_t count;
+    int32_t capacity;
+} thread_removals_t;
+
+static void thread_removals_init(thread_removals_t *tr, int32_t initial_cap)
+{
+    tr->capacity = initial_cap > 0 ? initial_cap : 64;
+    tr->removals = (removal_t *)malloc(tr->capacity * sizeof(removal_t));
+    tr->count = 0;
+}
+
+static void thread_removals_add(thread_removals_t *tr, const removal_t *r)
+{
+    if (tr->count >= tr->capacity)
+    {
+        tr->capacity *= 2;
+        tr->removals = (removal_t *)realloc(tr->removals, tr->capacity * sizeof(removal_t));
+    }
+    tr->removals[tr->count++] = *r;
+}
+
+static void thread_removals_free(thread_removals_t *tr)
+{
+    free(tr->removals);
+    tr->removals = NULL;
+    tr->count = 0;
+    tr->capacity = 0;
+}
 
 pcmci_graph_t *pcmci_skeleton(const pcmci_dataframe_t *df, const pcmci_config_t *config)
 {
@@ -310,6 +343,7 @@ pcmci_graph_t *pcmci_skeleton(const pcmci_dataframe_t *df, const pcmci_config_t 
     pcmci_varlag_t **other_bufs = (pcmci_varlag_t **)malloc(n_threads * sizeof(pcmci_varlag_t *));
     pcmci_varlag_t **cond_bufs = (pcmci_varlag_t **)malloc(n_threads * sizeof(pcmci_varlag_t *));
     int32_t **comb_bufs = (int32_t **)malloc(n_threads * sizeof(int32_t *));
+    thread_removals_t *thread_removals = (thread_removals_t *)malloc(n_threads * sizeof(thread_removals_t));
 
     for (int32_t t = 0; t < n_threads; t++)
     {
@@ -342,14 +376,13 @@ pcmci_graph_t *pcmci_skeleton(const pcmci_dataframe_t *df, const pcmci_config_t 
             break;
         }
 
-        /* Collect removals (PC-stable) */
-        removal_t *removals = NULL;
-        int32_t n_removals = 0;
-        int32_t removals_cap = 0;
+        /* Initialize per-thread removal buffers */
+        for (int32_t t = 0; t < n_threads; t++)
+        {
+            thread_removals_init(&thread_removals[t], 64);
+        }
 
-        omp_lock_t removal_lock;
-        omp_init_lock(&removal_lock);
-
+/* Parallel skeleton discovery - NO LOCKS */
 #pragma omp parallel for schedule(dynamic)
         for (int32_t j = 0; j < n; j++)
         {
@@ -359,6 +392,7 @@ pcmci_graph_t *pcmci_skeleton(const pcmci_dataframe_t *df, const pcmci_config_t 
             pcmci_varlag_t *other_neighbors = other_bufs[tid];
             pcmci_varlag_t *cond_set = cond_bufs[tid];
             int32_t *comb_idx = comb_bufs[tid];
+            thread_removals_t *my_removals = &thread_removals[tid];
 
             int32_t n_neighbors = get_neighbors_into(g, j, neighbors);
             if (n_neighbors <= cond_dim)
@@ -436,41 +470,40 @@ pcmci_graph_t *pcmci_skeleton(const pcmci_dataframe_t *df, const pcmci_config_t 
 
                 if (found_indep)
                 {
-                    omp_set_lock(&removal_lock);
-                    if (n_removals >= removals_cap)
-                    {
-                        removals_cap = removals_cap ? removals_cap * 2 : 128;
-                        removals = (removal_t *)realloc(removals, removals_cap * sizeof(removal_t));
-                    }
-                    removals[n_removals++] = removal;
-                    omp_unset_lock(&removal_lock);
+                    /* Thread-local append - NO LOCK */
+                    thread_removals_add(my_removals, &removal);
                 }
             }
         }
 
-        omp_destroy_lock(&removal_lock);
-
-        /* Apply removals */
-        for (int32_t r = 0; r < n_removals; r++)
+        /* Batch merge: apply all removals from all threads (sequential, fast) */
+        int32_t total_removals = 0;
+        for (int32_t t = 0; t < n_threads; t++)
         {
-            int64_t idx = pcmci_graph_idx(n, tau_max, removals[r].i, removals[r].tau, removals[r].j);
-            g->adj[idx] = false;
-            g->link_types[idx] = PCMCI_LINK_NONE;
-
-            int32_t sep_size = removals[r].sep_size;
-            if (sep_size > 0)
+            thread_removals_t *tr = &thread_removals[t];
+            for (int32_t r = 0; r < tr->count; r++)
             {
-                g->sepsets[idx].size = sep_size;
-                g->sepsets[idx].vars = (int32_t *)malloc(sep_size * sizeof(int32_t));
-                g->sepsets[idx].taus = (int32_t *)malloc(sep_size * sizeof(int32_t));
-                memcpy(g->sepsets[idx].vars, removals[r].sep_vars, sep_size * sizeof(int32_t));
-                memcpy(g->sepsets[idx].taus, removals[r].sep_taus, sep_size * sizeof(int32_t));
+                removal_t *rem = &tr->removals[r];
+                int64_t idx = pcmci_graph_idx(n, tau_max, rem->i, rem->tau, rem->j);
+                g->adj[idx] = false;
+                g->link_types[idx] = PCMCI_LINK_NONE;
+
+                int32_t sep_size = rem->sep_size;
+                if (sep_size > 0)
+                {
+                    g->sepsets[idx].size = sep_size;
+                    g->sepsets[idx].vars = (int32_t *)malloc(sep_size * sizeof(int32_t));
+                    g->sepsets[idx].taus = (int32_t *)malloc(sep_size * sizeof(int32_t));
+                    memcpy(g->sepsets[idx].vars, rem->sep_vars, sep_size * sizeof(int32_t));
+                    memcpy(g->sepsets[idx].taus, rem->sep_taus, sep_size * sizeof(int32_t));
+                }
             }
+            total_removals += tr->count;
+            thread_removals_free(tr);
         }
 
         if (verbosity >= 1)
-            printf("  Removed %d links\n", n_removals);
-        free(removals);
+            printf("  Removed %d links\n", total_removals);
     }
 
     /* Cleanup per-thread resources */
@@ -487,6 +520,7 @@ pcmci_graph_t *pcmci_skeleton(const pcmci_dataframe_t *df, const pcmci_config_t 
     free(other_bufs);
     free(cond_bufs);
     free(comb_bufs);
+    free(thread_removals);
 
     return g;
 }
