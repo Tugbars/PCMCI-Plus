@@ -42,3 +42,15 @@ EXPORTS
     ; Memory
     pcmci_alloc
     pcmci_free
+
+    ; CMI (Conditional Mutual Information)
+    pcmci_cmi_default_config
+    pcmci_cmi_test
+    pcmci_cmi_value
+    pcmci_mi_value
+    pcmci_kdtree_build
+    pcmci_kdtree_knn
+    pcmci_kdtree_count_radius
+    pcmci_kdtree_free
+    pcmci_digamma
+    pcmci_normalize_data
