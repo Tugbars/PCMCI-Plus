@@ -178,6 +178,7 @@ set(PCMCI_SOURCES
     src/significance.c
     src/pcmci.c
     src/cmi.c
+    src/gpdc.c
 )
 
 # Helper function to apply BLAS flags and definitions
@@ -272,6 +273,15 @@ else()
 endif()
 apply_blas_flags(pcmci_cmi_test)
 
+# GPDC example
+add_executable(pcmci_gpdc_test examples/example_gpdc.c)
+if(WIN32)
+    target_link_libraries(pcmci_gpdc_test PRIVATE pcmci_static)
+else()
+    target_link_libraries(pcmci_gpdc_test PRIVATE pcmci)
+endif()
+apply_blas_flags(pcmci_gpdc_test)
+
 # Install targets
 install(TARGETS pcmci pcmci_static
     LIBRARY DESTINATION lib
@@ -294,12 +304,10 @@ if(BLAS_LINK_FLAGS)
 endif()
 message(STATUS "OpenMP found: ${OpenMP_C_FOUND}")
 
-# Copy DLL to python folder for easy testing (Windows)
-if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/python")
-    add_custom_command(TARGET pcmci POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:pcmci>
-        ${CMAKE_CURRENT_SOURCE_DIR}/python/
-        COMMENT "Copying pcmci.dll to python folder"
-    )
+# Note: To use Python bindings, manually copy pcmci.dll to python/ folder:
+#   copy build\pcmci.dll python\
+if(WIN32)
+    message(STATUS "")
+    message(STATUS "After building, copy DLL to python folder:")
+    message(STATUS "  copy ${CMAKE_CURRENT_BINARY_DIR}\\pcmci.dll ${CMAKE_CURRENT_SOURCE_DIR}\\python\\")
 endif()
