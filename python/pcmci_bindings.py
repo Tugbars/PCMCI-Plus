@@ -20,6 +20,53 @@ from ctypes import (
 # Library Loading
 # =============================================================================
 
+def _add_dll_directories():
+    """Add MKL and compiler DLL directories to search path (Windows only)."""
+    if platform.system() != 'Windows':
+        return
+    
+    # Common Intel oneAPI installation paths
+    oneapi_paths = [
+        os.environ.get('MKLROOT', ''),
+        os.environ.get('ONEAPI_ROOT', ''),
+        r'C:\Program Files (x86)\Intel\oneAPI',
+        r'C:\Program Files\Intel\oneAPI',
+    ]
+    
+    # MKL and compiler runtime directories to add
+    subdirs = [
+        r'mkl\latest\bin',
+        r'mkl\latest\redist\intel64',
+        r'compiler\latest\bin',
+        r'compiler\latest\windows\redist\intel64_win\compiler',
+        # For older installations
+        r'mkl\latest\redist\intel64',
+        r'redist\intel64\mkl',
+        r'redist\intel64\compiler',
+    ]
+    
+    added_paths = []
+    
+    for base in oneapi_paths:
+        if not base or not os.path.exists(base):
+            continue
+        
+        for subdir in subdirs:
+            dll_path = os.path.join(base, subdir)
+            if os.path.exists(dll_path):
+                # Add to DLL search path (Python 3.8+)
+                if hasattr(os, 'add_dll_directory'):
+                    try:
+                        os.add_dll_directory(dll_path)
+                        added_paths.append(dll_path)
+                    except OSError:
+                        pass
+                # Also add to PATH for older Python / subprocess
+                if dll_path not in os.environ.get('PATH', ''):
+                    os.environ['PATH'] = dll_path + os.pathsep + os.environ.get('PATH', '')
+    
+    return added_paths
+
 def _find_library():
     """Find the PCMCI shared library."""
     # Determine library name based on platform
@@ -51,16 +98,36 @@ def _find_library():
         for lib_name in lib_names:
             lib_path = os.path.join(path, lib_name)
             if os.path.exists(lib_path):
-                return lib_path
+                return os.path.abspath(lib_path)
     
     raise OSError(
         f"Could not find PCMCI library. Searched for {lib_names} in:\n" +
         "\n".join(f"  - {p}" for p in search_paths[:6])
     )
 
+# Add MKL directories before loading the library
+_add_dll_directories()
+
 # Load the library
 _lib_path = _find_library()
-_lib = ctypes.CDLL(_lib_path)
+try:
+    _lib = ctypes.CDLL(_lib_path)
+except OSError as e:
+    # Provide helpful error message
+    error_msg = str(e)
+    if platform.system() == 'Windows':
+        error_msg += "\n\nMKL DLLs not found. Try one of:\n"
+        error_msg += "1. Run from Intel oneAPI command prompt\n"
+        error_msg += "2. Set MKLROOT environment variable:\n"
+        error_msg += '   set MKLROOT=C:\\Program Files (x86)\\Intel\\oneAPI\\mkl\\latest\n'
+        error_msg += "3. Add MKL bin to PATH:\n"
+        error_msg += '   set PATH=%MKLROOT%\\bin;%PATH%\n'
+        error_msg += "4. Copy MKL DLLs to the same folder as pcmci.dll:\n"
+        error_msg += "   - mkl_core.2.dll\n"
+        error_msg += "   - mkl_intel_thread.2.dll\n"
+        error_msg += "   - mkl_def.2.dll\n"
+        error_msg += "   - libiomp5md.dll\n"
+    raise OSError(error_msg) from e
 
 # =============================================================================
 # Structure Definitions
@@ -80,6 +147,16 @@ class CIResult(Structure):
         ("pvalue", c_double),   # P-value
         ("stat", c_double),     # Raw statistic (t-value)
         ("df", c_int32),        # Degrees of freedom
+    ]
+
+class Link(Structure):
+    """A causal link."""
+    _fields_ = [
+        ("i", c_int32),
+        ("tau", c_int32),
+        ("j", c_int32),
+        ("val", c_double),
+        ("pvalue", c_double),
     ]
 
 class Sepset(Structure):
@@ -114,24 +191,39 @@ class DataFrame(Structure):
     ]
 
 class Config(Structure):
-    """PCMCI+ configuration."""
+    """PCMCI+ configuration - must match C struct exactly."""
     _fields_ = [
-        ("tau_max", c_int32),
+        # Test parameters
+        ("test_type", c_int32),         # pcmci_test_type_t
+        ("corr_method", c_int32),       # pcmci_corr_method_t
         ("alpha_level", c_double),
-        ("max_cond_dim", c_int32),
-        ("verbosity", c_int32),
-        ("n_threads", c_int32),
-        ("fdr_method", c_int32),
-        ("use_robust", c_bool),
+        ("alpha_mci", c_double),
+        # Robustness
         ("winsorize_thresh", c_double),
+        # Algorithm parameters
+        ("tau_min", c_int32),
+        ("tau_max", c_int32),
+        ("max_cond_dim", c_int32),
+        ("pc_stable", c_bool),
+        # Multiple testing
+        ("fdr_method", c_int32),        # pcmci_fdr_method_t
+        # Parallelization
+        ("n_threads", c_int32),
+        # Verbosity
+        ("verbosity", c_int32),
     ]
 
 class Result(Structure):
-    """PCMCI+ result."""
+    """PCMCI+ result - must match C struct exactly."""
     _fields_ = [
         ("graph", POINTER(Graph)),
-        ("n_significant", c_int32),
-        ("runtime_seconds", c_double),
+        ("links", POINTER(Link)),
+        ("n_links", c_int32),
+        # Statistics
+        ("n_tests", c_int64),
+        ("runtime_secs", c_double),
+        # Intermediate
+        ("skeleton", POINTER(Graph)),
     ]
 
 # =============================================================================
@@ -159,8 +251,8 @@ _lib.pcmci_dataframe_free.argtypes = [POINTER(DataFrame)]
 _lib.pcmci_dataframe_free.restype = None
 
 # Config functions
-_lib.pcmci_config_default.argtypes = []
-_lib.pcmci_config_default.restype = Config
+_lib.pcmci_default_config.argtypes = []
+_lib.pcmci_default_config.restype = Config
 
 # Graph functions
 _lib.pcmci_graph_alloc.argtypes = [c_int32, c_int32]

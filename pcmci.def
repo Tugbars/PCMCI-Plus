@@ -1,0 +1,44 @@
+LIBRARY pcmci
+EXPORTS
+    ; Version
+    pcmci_version
+
+    ; Config
+    pcmci_default_config
+
+    ; DataFrame
+    pcmci_dataframe_create
+    pcmci_dataframe_create_copy
+    pcmci_dataframe_alloc
+    pcmci_dataframe_set_names
+    pcmci_dataframe_free
+    pcmci_extract_lagged
+    pcmci_extract_cond_set
+
+    ; Graph
+    pcmci_graph_alloc
+    pcmci_graph_free
+    pcmci_graph_has_link
+    pcmci_graph_set_link
+    pcmci_graph_get_val
+    pcmci_graph_get_pval
+    pcmci_graph_get_neighbors
+    pcmci_graph_print
+
+    ; Partial correlation
+    pcmci_parcorr_test
+    pcmci_parcorr_batch
+
+    ; Main algorithm
+    pcmci_run
+    pcmci_skeleton
+    pcmci_mci
+    pcmci_result_free
+
+    ; FDR
+    pcmci_fdr_correct
+    pcmci_get_significant_links
+
+    ; Memory
+    pcmci_alloc
+    pcmci_free

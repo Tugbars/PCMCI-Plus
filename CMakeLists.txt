@@ -194,6 +194,10 @@ endfunction()
 
 # Create shared library
 add_library(pcmci SHARED ${PCMCI_SOURCES})
+# Add .def file for Windows exports
+if(WIN32)
+    target_sources(pcmci PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/pcmci.def)
+endif()
 target_include_directories(pcmci PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${BLAS_INCLUDE_DIRS}
@@ -202,6 +206,8 @@ target_link_libraries(pcmci PUBLIC
     ${BLAS_LIBRARIES}
     OpenMP::OpenMP_C
 )
+# Define PCMCI_EXPORTS for DLL export (Windows)
+target_compile_definitions(pcmci PRIVATE PCMCI_EXPORTS)
 if(NOT WIN32)
     target_link_libraries(pcmci PUBLIC m)
     target_compile_definitions(pcmci PRIVATE _GNU_SOURCE)
@@ -273,3 +279,13 @@ if(BLAS_LINK_FLAGS)
     message(STATUS "BLAS link flags: ${BLAS_LINK_FLAGS}")
 endif()
 message(STATUS "OpenMP found: ${OpenMP_C_FOUND}")
+
+# Copy DLL to python folder for easy testing (Windows)
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/python")
+    add_custom_command(TARGET pcmci POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:pcmci>
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/
+        COMMENT "Copying pcmci.dll to python folder"
+    )
+endif()

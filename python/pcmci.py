@@ -25,7 +25,11 @@ from typing import Optional, List, Tuple, Dict, Any
 import ctypes
 from ctypes import byref, POINTER, c_double, c_char_p
 
-from . import pcmci_bindings as _bind
+# Handle both package import and direct execution
+try:
+    from . import pcmci_bindings as _bind
+except ImportError:
+    import pcmci_bindings as _bind
 
 # =============================================================================
 # Result Classes
@@ -191,8 +195,8 @@ class PCMCI:
         alpha: float = 0.05,
         max_cond_dim: int = -1,
         n_threads: int = 0,
-        use_robust: bool = True,
-        winsorize_thresh: float = 0.05,
+        use_spearman: bool = True,
+        winsorize_thresh: float = 0.0,
         verbosity: int = 0,
         fdr_method: int = 1,  # 0=none, 1=BH
     ) -> PCMCIResult:
@@ -207,10 +211,10 @@ class PCMCI:
             Maximum conditioning dimension (-1 for automatic).
         n_threads : int
             Number of threads (0 for automatic).
-        use_robust : bool
-            Use Spearman correlation with winsorization.
+        use_spearman : bool
+            Use Spearman correlation (True) or Pearson (False).
         winsorize_thresh : float
-            Winsorization threshold (fraction of data to clip).
+            Winsorization threshold (e.g., 0.01 for 1%/99%).
         verbosity : int
             Verbosity level (0=silent, 1=progress, 2=debug).
         fdr_method : int
@@ -221,15 +225,16 @@ class PCMCI:
         PCMCIResult
             Result object containing adjacency matrix, values, and p-values.
         """
-        # Create config
-        config = _bind._lib.pcmci_config_default()
+        # Create config using defaults then override
+        config = _bind._lib.pcmci_default_config()
         config.tau_max = self.tau_max
         config.alpha_level = alpha
+        config.alpha_mci = 0.0  # Same as alpha_level
         config.max_cond_dim = max_cond_dim
         config.n_threads = n_threads
         config.verbosity = verbosity
         config.fdr_method = fdr_method
-        config.use_robust = use_robust
+        config.corr_method = 0 if use_spearman else 1  # SPEARMAN=0, PEARSON=1
         config.winsorize_thresh = winsorize_thresh
         
         # Run algorithm
@@ -264,8 +269,8 @@ class PCMCI:
                 n_vars=self.n_vars,
                 tau_max=self.tau_max,
                 alpha=alpha,
-                n_significant=result.n_significant,
-                runtime=result.runtime_seconds,
+                n_significant=result.n_links,
+                runtime=result.runtime_secs,
                 var_names=self.var_names,
             )
         finally:
@@ -283,7 +288,7 @@ class PCMCI:
         
         Returns boolean adjacency matrix of shape (n_vars, tau_max+1, n_vars).
         """
-        config = _bind._lib.pcmci_config_default()
+        config = _bind._lib.pcmci_default_config()
         config.tau_max = self.tau_max
         config.alpha_level = alpha
         config.max_cond_dim = max_cond_dim
