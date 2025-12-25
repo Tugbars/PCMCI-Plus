@@ -156,9 +156,11 @@ int pcmci_residualize(const double *X, const double *Z,
         return 0;
     }
 
-    /* Copy Z and X since LAPACK overwrites them */
+    /* Copy Z and X since LAPACK overwrites them
+     * DGELS requires B to have max(m,n) = max(n,k) rows for the solution */
+    int32_t b_rows = (n > k) ? n : k;
     double *Z_work = (double *)pcmci_malloc((size_t)n * k * sizeof(double));
-    double *X_work = (double *)pcmci_malloc(n * sizeof(double));
+    double *X_work = (double *)pcmci_malloc(b_rows * sizeof(double));
 
     if (!Z_work || !X_work)
     {
@@ -170,6 +172,8 @@ int pcmci_residualize(const double *X, const double *Z,
         return -1;
     }
 
+    /* Initialize X_work - copy X and zero-pad if k > n */
+    memset(X_work, 0, b_rows * sizeof(double));
     memcpy(Z_work, Z, (size_t)n * k * sizeof(double));
     memcpy(X_work, X, n * sizeof(double));
 
@@ -491,26 +495,31 @@ pcmci_workspace_t *pcmci_workspace_create(int32_t n_samples, int32_t max_cond)
     size_t z_size = (size_t)n_samples * ws->max_cond;
     size_t gram_size = (size_t)ws->max_cond * ws->max_cond;
 
+    /* DGELS requires B array to have max(m,n) = max(n_samples, max_cond) rows */
+    size_t x_work_size = (n_samples > ws->max_cond) ? n_samples : ws->max_cond;
+
     ws->X_buf = (double *)pcmci_malloc(n_samples * sizeof(double));
     ws->Y_buf = (double *)pcmci_malloc(n_samples * sizeof(double));
     ws->Z_buf = (double *)pcmci_malloc(z_size * sizeof(double));
     ws->resid_X = (double *)pcmci_malloc(n_samples * sizeof(double));
     ws->resid_Y = (double *)pcmci_malloc(n_samples * sizeof(double));
     ws->Z_work = (double *)pcmci_malloc(z_size * sizeof(double));
-    ws->X_work = (double *)pcmci_malloc(n_samples * sizeof(double));
+    ws->X_work = (double *)pcmci_malloc(x_work_size * sizeof(double));
 
     /* Cholesky fast-path buffers */
     ws->Gram = (double *)pcmci_malloc(gram_size * sizeof(double));
     ws->Beta = (double *)pcmci_malloc(ws->max_cond * sizeof(double));
 
-    /* Query optimal LAPACK workspace size */
+    /* Query optimal LAPACK workspace size
+     * Use LDB = max(m, n) = max(n_samples, max_cond) for DGELS */
     double work_query;
     int32_t lwork = -1;
     int32_t m = n_samples, n = ws->max_cond, nrhs = 1;
+    int32_t ldb = (m > n) ? m : n;
 
     /* Use column-major layout for better LAPACK performance */
     LAPACKE_dgels_work(LAPACK_COL_MAJOR, 'N', m, n, nrhs,
-                       NULL, m, NULL, m, &work_query, lwork);
+                       NULL, m, NULL, ldb, &work_query, lwork);
 
     ws->lapack_lwork = (int32_t)work_query + 64;
     ws->lapack_work = (double *)pcmci_malloc(ws->lapack_lwork * sizeof(double));
@@ -636,9 +645,17 @@ void pcmci_residualize_ws(const double *X, const double *Z,
         memcpy(ws->Z_work, Z, (size_t)n * k * sizeof(double));
         memcpy(ws->X_work, X, n * sizeof(double));
 
-        /* Solve min||Z @ beta - X||_2 via QR */
+        /* Zero-pad X_work if k > n (underdetermined system) */
+        if (k > n)
+        {
+            memset(ws->X_work + n, 0, (k - n) * sizeof(double));
+        }
+
+        /* Solve min||Z @ beta - X||_2 via QR
+         * DGELS requires LDB >= max(m, n) = max(n, k) */
+        int32_t ldb = (n > k) ? n : k;
         info = LAPACKE_dgels_work(LAPACK_COL_MAJOR, 'N', n, k, 1,
-                                  ws->Z_work, n, ws->X_work, n,
+                                  ws->Z_work, n, ws->X_work, ldb,
                                   ws->lapack_work, ws->lapack_lwork);
 
         if (info != 0)
