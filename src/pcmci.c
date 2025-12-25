@@ -45,8 +45,10 @@ pcmci_config_t pcmci_default_config(void)
 {
     pcmci_config_t config = {
         .test_type = PCMCI_TEST_PARCORR,
+        .corr_method = PCMCI_CORR_SPEARMAN, /* Robust default for finance */
         .alpha_level = 0.05,
-        .alpha_mci = 0.0, /* Same as alpha_level */
+        .alpha_mci = 0.0,         /* Same as alpha_level */
+        .winsorize_thresh = 0.01, /* 1%/99% winsorization by default */
         .tau_min = 0,
         .tau_max = 1,
         .max_cond_dim = -1, /* Unlimited */
@@ -90,19 +92,57 @@ pcmci_result_t *pcmci_run(const pcmci_dataframe_t *df, const pcmci_config_t *con
 
     double start_time = pcmci_get_time();
 
+    const char *method_name = (config->corr_method == PCMCI_CORR_SPEARMAN)
+                                  ? "Spearman"
+                                  : "Pearson";
+
     if (config->verbosity >= 1)
     {
         printf("PCMCI+ v%s\n", pcmci_version());
         printf("========================================\n");
         printf("Variables: %d, Time points: %d, tau_max: %d\n",
                df->n_vars, df->T, config->tau_max);
+        printf("Method: %s partial correlation\n", method_name);
+        if (config->winsorize_thresh > 0)
+        {
+            printf("Winsorization: %.1f%%/%.1f%%\n",
+                   config->winsorize_thresh * 100,
+                   (1.0 - config->winsorize_thresh) * 100);
+        }
         printf("Alpha: %.4f, FDR method: %d\n",
                config->alpha_level, config->fdr_method);
         printf("========================================\n\n");
     }
 
-    /* Create a modified config with tau_max from config */
-    pcmci_dataframe_t df_modified = *df;
+    /*----------------------------------------------------------------------
+     * Preprocessing: Winsorization + Ranking (for robustness)
+     *----------------------------------------------------------------------*/
+    pcmci_dataframe_t *df_processed = NULL;
+    pcmci_dataframe_t *df_winsorized = NULL;
+    const pcmci_dataframe_t *df_to_use = df;
+
+    /* Step 1: Winsorize (if enabled) */
+    if (config->winsorize_thresh > 0.0)
+    {
+        df_winsorized = pcmci_dataframe_winsorize(df, config->winsorize_thresh);
+        if (df_winsorized)
+        {
+            df_to_use = df_winsorized;
+        }
+    }
+
+    /* Step 2: Rank transform (if Spearman) */
+    if (config->corr_method == PCMCI_CORR_SPEARMAN)
+    {
+        df_processed = pcmci_dataframe_to_ranks(df_to_use);
+        if (df_processed)
+        {
+            df_to_use = df_processed;
+        }
+    }
+
+    /* Create working copy with tau_max from config */
+    pcmci_dataframe_t df_modified = *df_to_use;
     df_modified.tau_max = config->tau_max;
 
     /*----------------------------------------------------------------------
@@ -117,6 +157,10 @@ pcmci_result_t *pcmci_run(const pcmci_dataframe_t *df, const pcmci_config_t *con
     pcmci_graph_t *skeleton = pcmci_skeleton(&df_modified, config);
     if (!skeleton)
     {
+        if (df_processed)
+            pcmci_dataframe_free(df_processed);
+        if (df_winsorized)
+            pcmci_dataframe_free(df_winsorized);
         free(result);
         return NULL;
     }
@@ -154,6 +198,12 @@ pcmci_result_t *pcmci_run(const pcmci_dataframe_t *df, const pcmci_config_t *con
     result->graph = skeleton;
 
     result->runtime_secs = pcmci_get_time() - start_time;
+
+    /* Cleanup processed dataframes */
+    if (df_processed)
+        pcmci_dataframe_free(df_processed);
+    if (df_winsorized)
+        pcmci_dataframe_free(df_winsorized);
 
     if (config->verbosity >= 1)
     {

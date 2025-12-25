@@ -635,3 +635,214 @@ pcmci_ci_result_t pcmci_parcorr_ws(const double *X, const double *Y,
 
     return result;
 }
+
+/*============================================================================
+ * Robust Transformations
+ *============================================================================*/
+
+/* Comparison function for argsort */
+typedef struct
+{
+    double val;
+    int32_t idx;
+} rank_pair_t;
+
+static int rank_cmp(const void *a, const void *b)
+{
+    double diff = ((rank_pair_t *)a)->val - ((rank_pair_t *)b)->val;
+    if (diff < 0)
+        return -1;
+    if (diff > 0)
+        return 1;
+    return 0;
+}
+
+void pcmci_rank_into(const double *x, int32_t n, double *out)
+{
+    if (n <= 0)
+        return;
+
+    /* Sort with original indices */
+    rank_pair_t *pairs = (rank_pair_t *)malloc(n * sizeof(rank_pair_t));
+    if (!pairs)
+    {
+        /* Fallback: just copy */
+        memcpy(out, x, n * sizeof(double));
+        return;
+    }
+
+    for (int32_t i = 0; i < n; i++)
+    {
+        pairs[i].val = x[i];
+        pairs[i].idx = i;
+    }
+
+    qsort(pairs, n, sizeof(rank_pair_t), rank_cmp);
+
+    /* Assign ranks, handling ties with average rank */
+    int32_t i = 0;
+    while (i < n)
+    {
+        int32_t j = i;
+        /* Find all tied values */
+        while (j < n - 1 && pairs[j + 1].val == pairs[i].val)
+        {
+            j++;
+        }
+
+        /* Average rank for ties (1-based ranks, then convert to 0-based) */
+        double avg_rank = (i + j) / 2.0;
+
+        for (int32_t k = i; k <= j; k++)
+        {
+            out[pairs[k].idx] = avg_rank;
+        }
+
+        i = j + 1;
+    }
+
+    free(pairs);
+}
+
+static int double_cmp(const void *a, const void *b)
+{
+    double diff = *(double *)a - *(double *)b;
+    if (diff < 0)
+        return -1;
+    if (diff > 0)
+        return 1;
+    return 0;
+}
+
+void pcmci_winsorize_into(const double *x, int32_t n, double thresh, double *out)
+{
+    if (n <= 0 || thresh <= 0.0 || thresh >= 0.5)
+    {
+        /* No winsorization, just copy */
+        memcpy(out, x, n * sizeof(double));
+        return;
+    }
+
+    /* Copy and sort to find percentiles */
+    double *sorted = (double *)malloc(n * sizeof(double));
+    if (!sorted)
+    {
+        memcpy(out, x, n * sizeof(double));
+        return;
+    }
+
+    memcpy(sorted, x, n * sizeof(double));
+    qsort(sorted, n, sizeof(double), double_cmp);
+
+    /* Find percentile bounds */
+    int32_t low_idx = (int32_t)(thresh * n);
+    int32_t high_idx = n - 1 - low_idx;
+
+    if (low_idx < 0)
+        low_idx = 0;
+    if (high_idx >= n)
+        high_idx = n - 1;
+    if (low_idx >= high_idx)
+    {
+        /* Edge case: not enough data */
+        memcpy(out, x, n * sizeof(double));
+        free(sorted);
+        return;
+    }
+
+    double low_val = sorted[low_idx];
+    double high_val = sorted[high_idx];
+
+    free(sorted);
+
+    /* Clip values */
+    for (int32_t i = 0; i < n; i++)
+    {
+        if (x[i] < low_val)
+        {
+            out[i] = low_val;
+        }
+        else if (x[i] > high_val)
+        {
+            out[i] = high_val;
+        }
+        else
+        {
+            out[i] = x[i];
+        }
+    }
+}
+
+pcmci_dataframe_t *pcmci_dataframe_to_ranks(const pcmci_dataframe_t *df)
+{
+    if (!df)
+        return NULL;
+
+    /* Allocate new data buffer */
+    size_t data_size = (size_t)df->n_vars * df->T;
+    double *ranked_data = (double *)pcmci_malloc(data_size * sizeof(double));
+    if (!ranked_data)
+        return NULL;
+
+    /* Rank each variable independently */
+    for (int32_t i = 0; i < df->n_vars; i++)
+    {
+        const double *row_in = df->data + (size_t)i * df->T;
+        double *row_out = ranked_data + (size_t)i * df->T;
+        pcmci_rank_into(row_in, df->T, row_out);
+    }
+
+    /* Create new dataframe */
+    pcmci_dataframe_t *result = (pcmci_dataframe_t *)calloc(1, sizeof(pcmci_dataframe_t));
+    if (!result)
+    {
+        pcmci_mkl_free(ranked_data);
+        return NULL;
+    }
+
+    result->data = ranked_data;
+    result->n_vars = df->n_vars;
+    result->T = df->T;
+    result->tau_max = df->tau_max;
+    result->owns_data = true;
+    result->var_names = NULL; /* Don't copy names - user can set if needed */
+
+    return result;
+}
+
+pcmci_dataframe_t *pcmci_dataframe_winsorize(const pcmci_dataframe_t *df, double thresh)
+{
+    if (!df || thresh <= 0.0)
+        return NULL;
+
+    /* Allocate new data buffer */
+    size_t data_size = (size_t)df->n_vars * df->T;
+    double *winsorized_data = (double *)pcmci_malloc(data_size * sizeof(double));
+    if (!winsorized_data)
+        return NULL;
+
+    /* Winsorize each variable independently */
+    for (int32_t i = 0; i < df->n_vars; i++)
+    {
+        const double *row_in = df->data + (size_t)i * df->T;
+        double *row_out = winsorized_data + (size_t)i * df->T;
+        pcmci_winsorize_into(row_in, df->T, thresh, row_out);
+    }
+
+    /* Create new dataframe */
+    pcmci_dataframe_t *result = (pcmci_dataframe_t *)calloc(1, sizeof(pcmci_dataframe_t));
+    if (!result)
+    {
+        pcmci_mkl_free(winsorized_data);
+        return NULL;
+    }
+
+    result->data = winsorized_data;
+    result->n_vars = df->n_vars;
+    result->T = df->T;
+    result->tau_max = df->tau_max;
+    result->owns_data = true;
+    result->var_names = NULL;
+
+    return result;
+}
